@@ -64,12 +64,19 @@ function scoreItemNotReceived(
   let totalScore = 0;
 
   const disputeDate = new Date(dispute.create_time).getTime();
-  const deliveryEvent = order?.trackingEvents?.find(
-    (e) => e.status.toUpperCase() === 'DELIVERED'
-  );
-  const deliveryTime = deliveryEvent
-    ? new Date(deliveryEvent.time).getTime()
-    : null;
+  const deliveryEvent = order?.trackingEvents?.find((event) => {
+  if (event.status.toUpperCase() !== 'DELIVERED') {
+    return false;
+  }
+
+  const timestamp = new Date(event.time).getTime();
+
+  return Number.isFinite(timestamp);
+});
+
+const deliveryTime = deliveryEvent
+  ? new Date(deliveryEvent.time).getTime()
+  : null;
 
   // 1. Tracking number exists (+20)
   const hasTracking = Boolean(order?.trackingNumber && order?.carrier);
@@ -172,87 +179,91 @@ function scoreItemNotReceived(
     });
   }
 
-  // 5. Delivery address matches transaction shipping address (+15)
-  const w5 = INR_RUBRIC_WEIGHTS.find((w) => w.id === 'INR_ADDRESS_MATCHES')!;
-  const hasValidAddress = Boolean(
-    order?.shippingAddress?.line1 &&
-      order?.shippingAddress?.city &&
-      order?.shippingAddress?.postalCode
-  );
-  if (hasValidAddress) {
-    totalScore += w5.points;
-    breakdown.push({
-      id: w5.id,
-      title: w5.title,
-      pointsPossible: w5.points,
-      pointsAwarded: w5.points,
-      passed: true,
-      reason: `Delivery address on record matches transaction (${order?.shippingAddress.city}, ${order?.shippingAddress.state} ${order?.shippingAddress.postalCode})`,
-    });
-  } else {
-    breakdown.push({
-      id: w5.id,
-      title: w5.title,
-      pointsPossible: w5.points,
-      pointsAwarded: 0,
-      passed: false,
-      reason: 'Incomplete or missing shipping address in order record.',
-    });
-  }
+   // 5. Delivery address matches transaction shipping address (+15)
+  const w5 = INR_RUBRIC_WEIGHTS.find(
+    (w) => w.id === 'INR_ADDRESS_MATCHES'
+  )!;
+
+  // Transaction shipping address is not currently available
+  // for comparison, so this criterion remains unverified.
+  breakdown.push({
+    id: w5.id,
+    title: w5.title,
+    pointsPossible: w5.points,
+    pointsAwarded: 0,
+    passed: false,
+    reason:
+      'Address match cannot be verified because the transaction shipping address is unavailable.',
+  });
 
   // 6. No customer complaint messages before delivery (+5)
   const w6 = INR_RUBRIC_WEIGHTS.find(
     (w) => w.id === 'INR_NO_PRE_DELIVERY_COMPLAINT'
   )!;
-  const preDeliveryComplaint = order?.customerMessages?.some((msg) => {
-    if (msg.from !== 'customer') return false;
-    const msgTime = new Date(msg.time).getTime();
-    return deliveryTime ? msgTime < deliveryTime : true;
+  const hasMessageHistory = Array.isArray(order?.customerMessages);
+
+const preDeliveryComplaint = hasMessageHistory && deliveryTime !== null
+  ? order.customerMessages.some((msg) => {
+      if (msg.from !== 'customer') return false;
+
+      const msgTime = new Date(msg.time).getTime();
+
+      return Number.isFinite(msgTime) && msgTime < deliveryTime;
+    })
+  : null;
+  if (preDeliveryComplaint === false) {
+  totalScore += w6.points;
+  breakdown.push({
+    id: w6.id,
+    title: w6.title,
+    pointsPossible: w6.points,
+    pointsAwarded: w6.points,
+    passed: true,
+    reason: 'No pre-delivery customer complaint found in available communication history.',
   });
-  if (!preDeliveryComplaint) {
-    totalScore += w6.points;
-    breakdown.push({
-      id: w6.id,
-      title: w6.title,
-      pointsPossible: w6.points,
-      pointsAwarded: w6.points,
-      passed: true,
-      reason: 'No customer dispute or complaint messages sent before delivery.',
-    });
-  } else {
-    breakdown.push({
-      id: w6.id,
-      title: w6.title,
-      pointsPossible: w6.points,
-      pointsAwarded: 0,
-      passed: false,
-      reason: 'Customer initiated communication or complaint prior to delivery.',
-    });
-  }
+} else {
+  breakdown.push({
+    id: w6.id,
+    title: w6.title,
+    pointsPossible: w6.points,
+    pointsAwarded: 0,
+    passed: false,
+    reason: preDeliveryComplaint === null
+      ? 'Customer communication history or valid delivery time is unavailable.'
+      : 'Customer sent a complaint before delivery.',
+  });
+}
+  
 
   // 7. No prior refund (+5)
   const w7 = INR_RUBRIC_WEIGHTS.find((w) => w.id === 'INR_NO_PRIOR_REFUND')!;
-  const hasPriorRefund = Boolean(order?.refunds && order.refunds.length > 0);
-  if (!hasPriorRefund) {
-    totalScore += w7.points;
-    breakdown.push({
-      id: w7.id,
-      title: w7.title,
-      pointsPossible: w7.points,
-      pointsAwarded: w7.points,
-      passed: true,
-      reason: 'No prior refunds or concessions issued for this order.',
-    });
-  } else {
-    breakdown.push({
-      id: w7.id,
-      title: w7.title,
-      pointsPossible: w7.points,
-      pointsAwarded: 0,
-      passed: false,
-      reason: 'Prior refund or goodwill concession was already issued.',
-    });
-  }
+  const hasRefundHistory = Array.isArray(order?.refunds);
+const hasPriorRefund = hasRefundHistory
+  ? order.refunds.length > 0
+  : null;
+
+if (hasPriorRefund === false) {
+  totalScore += w7.points;
+  breakdown.push({
+    id: w7.id,
+    title: w7.title,
+    pointsPossible: w7.points,
+    pointsAwarded: w7.points,
+    passed: true,
+    reason: 'No prior refunds recorded in available order history.',
+  });
+} else {
+  breakdown.push({
+    id: w7.id,
+    title: w7.title,
+    pointsPossible: w7.points,
+    pointsAwarded: 0,
+    passed: false,
+    reason: hasPriorRefund === null
+      ? 'Refund history is unavailable.'
+      : 'Prior refund or goodwill concession was already issued.',
+  });
+}
 
   const band = getScoreBand(totalScore);
   return {
@@ -264,6 +275,7 @@ function scoreItemNotReceived(
   };
 }
 
+
 function scoreNotAsDescribed(
   dispute: PayPalDispute,
   order?: StoreOrder | null
@@ -271,75 +283,71 @@ function scoreNotAsDescribed(
   const breakdown: RubricItemResult[] = [];
   let totalScore = 0;
 
-  const deliveryEvent = order?.trackingEvents?.find(
-    (e) => e.status.toUpperCase() === 'DELIVERED'
-  );
+  // Find a delivery event with a valid timestamp
+  const deliveryEvent = order?.trackingEvents?.find((event) => {
+    if (event.status.toUpperCase() !== 'DELIVERED') {
+      return false;
+    }
+
+    return Number.isFinite(new Date(event.time).getTime());
+  });
+
   const deliveryTime = deliveryEvent
     ? new Date(deliveryEvent.time).getTime()
     : null;
 
-  // 1. Order listing matches item description (+25)
-  const w1 = SNAD_RUBRIC_WEIGHTS.find((w) => w.id === 'SNAD_LISTING_MATCHES')!;
-  const hasListingDesc = Boolean(
-    order?.listingDescription && order.listingDescription.length > 15
-  );
-  if (hasListingDesc) {
-    totalScore += w1.points;
-    breakdown.push({
-      id: w1.id,
-      title: w1.title,
-      pointsPossible: w1.points,
-      pointsAwarded: w1.points,
-      passed: true,
-      reason: 'Detailed item specifications and listing description on record.',
-    });
-  } else {
-    breakdown.push({
-      id: w1.id,
-      title: w1.title,
-      pointsPossible: w1.points,
-      pointsAwarded: 0,
-      passed: false,
-      reason: 'Missing or insufficient listing description in catalog.',
-    });
-  }
+  // 1. Listing matches delivered item (+25)
+  const w1 = SNAD_RUBRIC_WEIGHTS.find(
+    (w) => w.id === 'SNAD_LISTING_MATCHES'
+  )!;
 
-  // 2. Evidence of return policy shown (+15)
-  const w2 = SNAD_RUBRIC_WEIGHTS.find((w) => w.id === 'SNAD_RETURN_POLICY')!;
-  const hasReturnPolicy = Boolean(
-    order?.returnPolicyText && order.returnPolicyText.length > 10
-  );
-  if (hasReturnPolicy) {
-    totalScore += w2.points;
-    breakdown.push({
-      id: w2.id,
-      title: w2.title,
-      pointsPossible: w2.points,
-      pointsAwarded: w2.points,
-      passed: true,
-      reason: 'Documented merchant return policy displayed to buyer.',
-    });
-  } else {
-    breakdown.push({
-      id: w2.id,
-      title: w2.title,
-      pointsPossible: w2.points,
-      pointsAwarded: 0,
-      passed: false,
-      reason: 'No documented return policy terms found for this order.',
-    });
-  }
+  breakdown.push({
+    id: w1.id,
+    title: w1.title,
+    pointsPossible: w1.points,
+    pointsAwarded: 0,
+    passed: false,
+    reason:
+      'Evidence comparing the delivered item with the original listing is unavailable.',
+  });
 
-  // 3. Customer messages show no earlier complaint (+15)
+  // 2. Return policy shown to buyer (+15)
+  const w2 = SNAD_RUBRIC_WEIGHTS.find(
+    (w) => w.id === 'SNAD_RETURN_POLICY'
+  )!;
+
+  breakdown.push({
+    id: w2.id,
+    title: w2.title,
+    pointsPossible: w2.points,
+    pointsAwarded: 0,
+    passed: false,
+    reason:
+      'The return policy text is recorded, but proof that it was displayed to the buyer is unavailable.',
+  });
+
+  // 3. No earlier customer complaint (+15)
   const w3 = SNAD_RUBRIC_WEIGHTS.find(
     (w) => w.id === 'SNAD_NO_EARLIER_COMPLAINT'
   )!;
-  const earlyComplaint = order?.customerMessages?.some((msg) => {
-    if (msg.from !== 'customer') return false;
-    const msgTime = new Date(msg.time).getTime();
-    return deliveryTime ? msgTime < deliveryTime : false;
-  });
-  if (!earlyComplaint) {
+
+  const messagesAvailable = Array.isArray(order?.customerMessages);
+
+  const messageTimesValid = messagesAvailable &&
+    order.customerMessages.every((msg) =>
+      Number.isFinite(new Date(msg.time).getTime())
+    );
+
+  const earlyComplaint =
+    messagesAvailable && messageTimesValid && deliveryTime !== null
+      ? order.customerMessages.some((msg) => {
+          if (msg.from !== 'customer') return false;
+
+          return new Date(msg.time).getTime() < deliveryTime;
+        })
+      : null;
+
+  if (earlyComplaint === false) {
     totalScore += w3.points;
     breakdown.push({
       id: w3.id,
@@ -347,7 +355,7 @@ function scoreNotAsDescribed(
       pointsPossible: w3.points,
       pointsAwarded: w3.points,
       passed: true,
-      reason: 'No pre-delivery or premature complaints found in communication log.',
+      reason: 'No earlier customer complaint found in the available communication history.',
     });
   } else {
     breakdown.push({
@@ -356,7 +364,10 @@ function scoreNotAsDescribed(
       pointsPossible: w3.points,
       pointsAwarded: 0,
       passed: false,
-      reason: 'Customer reported dissatisfaction prior to confirmed receipt.',
+      reason:
+        earlyComplaint === null
+          ? 'Communication history or valid delivery time is unavailable.'
+          : 'Customer reported dissatisfaction before delivery.',
     });
   }
 
@@ -364,42 +375,29 @@ function scoreNotAsDescribed(
   const w4 = SNAD_RUBRIC_WEIGHTS.find(
     (w) => w.id === 'SNAD_EVIDENCE_PRESENT'
   )!;
-  // If listing description has specific condition or photo notes
-  const hasEvidence = Boolean(
-    order?.listingDescription &&
-      (order.listingDescription.toLowerCase().includes('condition') ||
-        order.listingDescription.toLowerCase().includes('authentic') ||
-        order.listingDescription.toLowerCase().includes('sealed') ||
-        order.listingDescription.toLowerCase().includes('photo') ||
-        order.listingDescription.length > 50)
-  );
-  if (hasEvidence) {
-    totalScore += w4.points;
-    breakdown.push({
-      id: w4.id,
-      title: w4.title,
-      pointsPossible: w4.points,
-      pointsAwarded: w4.points,
-      passed: true,
-      reason: 'High-specificity listing evidence and condition disclosures verified.',
-    });
-  } else {
-    breakdown.push({
-      id: w4.id,
-      title: w4.title,
-      pointsPossible: w4.points,
-      pointsAwarded: 0,
-      passed: false,
-      reason: 'Insufficient item condition and photo documentation.',
-    });
-  }
+
+  breakdown.push({
+    id: w4.id,
+    title: w4.title,
+    pointsPossible: w4.points,
+    pointsAwarded: 0,
+    passed: false,
+    reason:
+      'Actual item-specific photos or condition evidence are unavailable for verification.',
+  });
 
   // 5. No prior refund or goodwill offer (+10)
   const w5 = SNAD_RUBRIC_WEIGHTS.find(
     (w) => w.id === 'SNAD_NO_PRIOR_REFUND_OR_OFFER'
   )!;
-  const hasPriorRefund = Boolean(order?.refunds && order.refunds.length > 0);
-  if (!hasPriorRefund) {
+
+  const refundHistoryAvailable = Array.isArray(order?.refunds);
+
+  const hasPriorRefund = refundHistoryAvailable
+    ? order.refunds.length > 0
+    : null;
+
+  if (hasPriorRefund === false) {
     totalScore += w5.points;
     breakdown.push({
       id: w5.id,
@@ -407,7 +405,7 @@ function scoreNotAsDescribed(
       pointsPossible: w5.points,
       pointsAwarded: w5.points,
       passed: true,
-      reason: 'No prior partial refund or goodwill credit has been applied.',
+      reason: 'No prior refunds recorded in the available order history.',
     });
   } else {
     breakdown.push({
@@ -416,7 +414,10 @@ function scoreNotAsDescribed(
       pointsPossible: w5.points,
       pointsAwarded: 0,
       passed: false,
-      reason: `Prior refund or settlement exists: ${order?.refunds.map((r) => `$${r.amount}`).join(', ')}`,
+      reason:
+        hasPriorRefund === null
+          ? 'Refund history is unavailable.'
+          : 'A prior refund or settlement exists.',
     });
   }
 
@@ -424,8 +425,8 @@ function scoreNotAsDescribed(
   const w6 = SNAD_RUBRIC_WEIGHTS.find(
     (w) => w.id === 'SNAD_DELIVERY_CONFIRMED'
   )!;
-  const isDelivered = Boolean(deliveryEvent);
-  if (isDelivered) {
+
+  if (deliveryEvent) {
     totalScore += w6.points;
     breakdown.push({
       id: w6.id,
@@ -433,7 +434,7 @@ function scoreNotAsDescribed(
       pointsPossible: w6.points,
       pointsAwarded: w6.points,
       passed: true,
-      reason: 'Delivery confirmed; buyer is in physical possession of item.',
+      reason: `Carrier tracking records delivery at ${deliveryEvent.location || 'an unspecified location'}.`,
     });
   } else {
     breakdown.push({
@@ -442,11 +443,13 @@ function scoreNotAsDescribed(
       pointsPossible: w6.points,
       pointsAwarded: 0,
       passed: false,
-      reason: 'Item delivery could not be confirmed via carrier tracking.',
+      reason: 'A valid delivery event could not be verified.',
     });
   }
 
+  // Calculate final score
   const band = getScoreBand(totalScore);
+
   return {
     totalScore,
     band,
